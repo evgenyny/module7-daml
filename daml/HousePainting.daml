@@ -1,0 +1,146 @@
+module HousePainting where
+
+import Daml.Script
+
+template Account
+  with
+    issuer : Party
+    owner : Party
+    amount : Int
+  where
+    signatory issuer
+    observer owner
+
+    choice Account_ReduceBalance : ContractId Account
+      with
+        amountToSubstract : Int
+      controller issuer
+      do
+        create this with
+          amount = amount - amountToSubstract
+
+    choice Account_IncreaseBalance : ContractId Account
+      with
+        amountToAdd : Int
+      controller issuer
+      do
+        create this with
+          amount = amount + amountToAdd
+
+template PaintProposal
+  with
+    customer : Party
+    painter : Party
+    price : Int
+    objectToPaint : Text
+    bank : Party
+  where
+    signatory customer
+    observer painter, bank
+
+    choice PaintProposal_Accept : ContractId PaintContract
+      controller painter
+      do
+        create PaintContract with ..
+
+template PaintContract
+  with
+    customer : Party
+    painter : Party
+    price : Int
+    objectToPaint : Text
+    bank : Party
+  where
+    signatory painter
+    observer customer
+
+    choice PaintContract_Fulfilled : ContractId PaymentProposal
+      controller painter
+      do
+        create PaymentProposal with
+          customer = customer
+          painter = painter
+          price = price
+          bank = bank
+
+template PaymentProposal
+  with
+    customer : Party
+    painter : Party
+    price : Int
+    bank : Party
+  where
+    signatory painter
+    observer customer, bank
+
+    choice PaymentProposal_Accept : ContractId Payment
+      with
+        customerAccount : ContractId Account
+        painterAccount : ContractId Account
+      controller customer
+      do
+        create Payment with
+          initiator = customer
+          reciever = painter
+          from = customerAccount
+          to = painterAccount
+          bank = bank
+          amount = price
+
+template Payment
+  with
+    initiator : Party
+    reciever : Party
+    from : ContractId Account
+    to : ContractId Account
+    bank : Party
+    amount : Int
+  where
+    signatory initiator
+    observer reciever, bank
+
+    choice Payment_Perform : ContractId Account
+      controller bank
+      do
+        exercise from Account_ReduceBalance with amountToSubstract = amount
+        exercise to Account_IncreaseBalance with amountToAdd = amount
+
+test_script : Script (ContractId Account)
+test_script = script do
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  bank <- allocateParty "Bank"
+
+  aliceAccount <- submit bank do
+    createCmd Account with
+      issuer = bank
+      owner = alice
+      amount = 2480
+
+  bobAccount <- submit bank do
+    createCmd Account with
+      issuer = bank
+      owner = bob
+      amount = 3475
+
+  paintProposalToBob <- submit alice do
+    createCmd PaintProposal with
+      customer = alice
+      painter = bob
+      price = 350
+      objectToPaint = "House"
+      bank = bank
+
+  paintContract <- submit bob do
+    exerciseCmd paintProposalToBob PaintProposal_Accept
+
+  paymentProposal <- submit bob do
+    exerciseCmd paintContract PaintContract_Fulfilled
+
+  acceptedPaymentProposal <- submit alice do
+    exerciseCmd paymentProposal PaymentProposal_Accept with
+      customerAccount = aliceAccount
+      painterAccount = bobAccount
+
+  submit bank do
+    exerciseCmd acceptedPaymentProposal Payment_Perform
